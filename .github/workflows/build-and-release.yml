@@ -6,8 +6,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      GRADLE_USER_HOME: ${{ runner.temp }}/.gradle
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,7 +22,6 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper/
-            ${{ env.GRADLE_USER_HOME }}
           key: gradle-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties') }}-${{ hashFiles('**/*.gradle*','**/build.gradle*') }}
           restore-keys: gradle-${{ runner.os }}-
 
@@ -56,9 +53,6 @@ jobs:
         run: ls -l secureotp-release-key.jks || true
 
       - name: Build APKs
-        env:
-          KEYSTORE_PASSWORD: ${{ env.KEYSTORE_PASSWORD }}
-          KEY_PASSWORD: ${{ env.KEY_PASSWORD }}
         run: ./gradlew clean assembleRelease assembleDebug --no-daemon
 
       - name: Show built APKs
