@@ -127,22 +127,36 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPLOAD_URL: ${{ steps.create_release.outputs.upload_url }}
+          RAW_UPLOAD_URL: ${{ steps.create_release.outputs.upload_url }}
         run: |
-          if [ -z "$UPLOAD_URL" ]; then
+          if [ -z "$RAW_UPLOAD_URL" ]; then
             echo "No upload URL, skipping asset upload"
             exit 1
           fi
+          UPLOAD_URL=${RAW_UPLOAD_URL%\{*}
+          echo "Release upload URL: $UPLOAD_URL"
           shopt -s nullglob || true
-          # Upload signed APKs from artifacts/
-          for apk in artifacts/*.apk; do
+          set -e
+
+          files=()
+          for apk in artifacts/*.apk app/build/outputs/apk/release/*.apk app/build/outputs/apk/*/release/*.apk; do
             if [ -f "$apk" ]; then
-              name=$(basename "$apk")
-              echo "Uploading $apk as $name"
-              curl -s -X POST \
-                -H "Authorization: token $GITHUB_TOKEN" \
-                -H "Content-Type: application/vnd.android.package-archive" \
-                --data-binary @"$apk" "$UPLOAD_URL?name=$name"
+              files+=("$apk")
             fi
           done
-          # Note: keystore is not uploaded; use repository secrets to persist keys across runs.
+
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No APK files found to upload"
+            exit 1
+          fi
+
+          for apk in "${files[@]}"; do
+            name=$(basename "$apk")
+            echo "Uploading $apk as $name"
+            response=$(curl -Ssf -X POST \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Content-Type: application/vnd.android.package-archive" \
+              --data-binary @"$apk" "$UPLOAD_URL?name=$name")
+            echo "$response"
+          done
+          echo "Note: keystore is not uploaded; use repository secrets to persist keys across runs."
