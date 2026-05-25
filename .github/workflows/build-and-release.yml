@@ -1,5 +1,8 @@
 name: Build and Release APK
 
+permissions:
+  contents: write
+
 on:
   push:
   workflow_dispatch:
@@ -111,9 +114,8 @@ jobs:
       - name: Create GitHub Release
         id: create_release
         uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ env.RELEASE_TAG }}
           release_name: ${{ env.RELEASE_TAG }}
           body: "Automated build: APKs attached."
