@@ -2,6 +2,7 @@ name: Build and Release APK
 
 on:
   push:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -10,11 +11,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 11
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '11'
+          java-version: '17'
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -29,15 +30,14 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Generate keystore passwords
+      - name: Generate temporary keystore (no secrets required)
         run: |
+          set -e
+          echo "Generating temporary keystore on runner"
           KEYSTORE_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=' | cut -c1-24)
           KEY_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=' | cut -c1-24)
           echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> $GITHUB_ENV
           echo "KEY_PASSWORD=$KEY_PASSWORD" >> $GITHUB_ENV
-
-      - name: Create keystore for signing
-        run: |
           keytool -genkeypair -v \
             -keystore secureotp-release-key.jks \
             -storetype JKS \
@@ -49,11 +49,50 @@ jobs:
             -validity 10000 \
             -dname "CN=SecureOTP, OU=Dev, O=SecureOTP, L=Unknown, ST=Unknown, C=US"
 
-      - name: Show keystore
-        run: ls -l secureotp-release-key.jks || true
+      - name: Install Android SDK command-line tools
+        env:
+          ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+        run: |
+          set -e
+          SDK_ROOT=${ANDROID_SDK_ROOT}
+          mkdir -p "$SDK_ROOT"
+          cd "$SDK_ROOT"
+          curl -sSLo cmdline.zip https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+          unzip -q cmdline.zip -d cmdline-tools
+          mv cmdline-tools/cmdline-tools cmdline-tools/latest
+          export PATH="$SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --sdk_root="$SDK_ROOT" --licenses || true
+          sdkmanager --sdk_root="$SDK_ROOT" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Build APKs
-        run: ./gradlew clean assembleRelease assembleDebug --no-daemon
+        env:
+          ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+        run: ./gradlew clean assembleRelease --no-daemon
+
+      - name: Align and sign APKs
+        env:
+          ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+          KEYSTORE_PASSWORD: ${{ env.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ env.KEY_PASSWORD }}
+        run: |
+          set -e
+          SDK_ROOT=${ANDROID_SDK_ROOT}
+          BUILD_APKS=(app/build/outputs/apk/release/*.apk app/build/outputs/apk/*/release/*.apk)
+          mkdir -p artifacts
+          for ap in ${BUILD_APKS[@]}; do
+            for f in $ap; do
+              if [ -f "$f" ]; then
+                base=$(basename "$f" .apk)
+                aligned=artifacts/${base}-aligned.apk
+                signed=artifacts/${base}-signed.apk
+                echo "Aligning $f -> $aligned"
+                "$SDK_ROOT/build-tools/34.0.0/zipalign" -v -p 4 "$f" "$aligned"
+                echo "Signing $aligned -> $signed"
+                "$SDK_ROOT/build-tools/34.0.0/apksigner" sign --ks secureotp-release-key.jks --ks-pass pass:$KEYSTORE_PASSWORD --key-pass pass:$KEY_PASSWORD --out "$signed" "$aligned"
+              fi
+            done
+          done
+
 
       - name: Show built APKs
         run: find app/build/outputs/apk -type f -name "*.apk" -maxdepth 5 -print || true
@@ -88,8 +127,9 @@ jobs:
             echo "No upload URL, skipping asset upload"
             exit 1
           fi
-          shopt -s globstar || true
-          for apk in app/build/outputs/apk/**/*.apk; do
+          shopt -s nullglob || true
+          # Upload signed APKs from artifacts/
+          for apk in artifacts/*.apk; do
             if [ -f "$apk" ]; then
               name=$(basename "$apk")
               echo "Uploading $apk as $name"
@@ -99,3 +139,4 @@ jobs:
                 --data-binary @"$apk" "$UPLOAD_URL?name=$name"
             fi
           done
+          # Note: keystore is not uploaded; use repository secrets to persist keys across runs.
